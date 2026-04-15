@@ -65,6 +65,21 @@ Four ranking modes are available: `default` (balanced), `genre_first` (doubles t
 
 ---
 
+## 6b. Fairness and Diversity Component
+
+**Problem:** Without any diversity constraint, an artist with two high-scoring songs in the catalog can appear twice in the top 5. This is a fairness issue: it overexposes one artist and underexposes others who may be equally good fits, creating a filter bubble within the results.
+
+**Solution — artist diversity penalty:** When `diversity_penalty=True` is passed to `recommend_songs()`, the function tracks which artists have already been placed in the output. If a song's artist already appears in the top results, that song's score is multiplied by 0.70 (a 30% penalty) before it can fill a remaining slot. This means a repeat artist can still appear if no other song scores high enough, but they are always disadvantaged relative to a new artist.
+
+**Why this improves fairness:**
+- It prevents a single prolific artist from monopolizing recommendations simply because they have more songs in the catalog.
+- It ensures users are exposed to a wider range of artists, which better reflects the diversity of the available music.
+- The penalty is soft (30%, not a hard ban), so a genuinely superior second song from the same artist can still appear — but only if it truly outscores all alternatives after the penalty.
+
+**Trade-off:** The diversity penalty can override musical quality. A slightly lower-scoring song from a new artist may displace a higher-scoring song from a repeat artist. This is intentional — it reflects the deliberate design choice that variety matters, not just pure score maximization.
+
+---
+
 ## 7. Evaluation
 
 Three distinct user profiles were tested:
