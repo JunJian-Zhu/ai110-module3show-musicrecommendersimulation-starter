@@ -206,13 +206,13 @@ def main():
     songs = load_songs(CSV_PATH)
     print(f"Loaded songs: {len(songs)}")
 
-    if not os.getenv("ANTHROPIC_API_KEY"):
+    if not os.getenv("GEMINI_API_KEY"):
         print(
-            "\n[WARNING] ANTHROPIC_API_KEY is not set.\n"
-            "  Claude steps will be skipped; a default profile will be used instead.\n"
+            "\n[WARNING] GEMINI_API_KEY is not set.\n"
+            "  Gemini steps will be skipped; a default profile will be used instead.\n"
             "  To enable AI features:\n"
-            "    1. Copy .env.example to .env\n"
-            "    2. Fill in your key from https://console.anthropic.com/\n"
+            "    1. Get a FREE key at: https://aistudio.google.com/apikey\n"
+            "    2. Copy .env.example to .env and add your key\n"
             "    3. Re-run this script\n"
         )
 

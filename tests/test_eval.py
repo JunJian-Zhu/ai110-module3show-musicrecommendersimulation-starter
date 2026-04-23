@@ -4,7 +4,7 @@ Evaluation harness for VibeFinder AI (Project 4).
 Three test groups:
   A — Input guardrail tests       (no API key needed, always run)
   B — Output guardrail + quality  (no API key needed, always run)
-  C — Live Claude API tests       (skipped if ANTHROPIC_API_KEY not set)
+  C — Live Claude API tests       (skipped if GEMINI_API_KEY not set)
 
 Run from the project root:
     pytest tests/test_eval.py -v
@@ -29,7 +29,7 @@ from ai_recommender import (
 # ── Shared fixtures ───────────────────────────────────────────────────────────
 
 SONGS = load_songs(os.path.join(os.path.dirname(__file__), "..", "data", "songs.csv"))
-HAS_KEY = bool(os.getenv("ANTHROPIC_API_KEY"))
+HAS_KEY = bool(os.getenv("GEMINI_API_KEY"))
 
 _GOOD_PREFS = {
     "genre": "pop",
@@ -202,12 +202,12 @@ class TestRecommenderQuality:
 
 
 # ════════════════════════════════════════════════════════════════════
-# Group C — Live Claude API tests (skipped without ANTHROPIC_API_KEY)
+# Group C — Live Claude API tests (skipped without GEMINI_API_KEY)
 # ════════════════════════════════════════════════════════════════════
 
-@pytest.mark.skipif(not HAS_KEY, reason="ANTHROPIC_API_KEY not set")
+@pytest.mark.skipif(not HAS_KEY, reason="GEMINI_API_KEY not set")
 class TestClaudeIntegration:
-    """Live API tests — only run when ANTHROPIC_API_KEY is present."""
+    """Live API tests — only run when GEMINI_API_KEY is present."""
 
     def test_gym_query_returns_valid_schema(self):
         prefs, err = extract_preferences("I want high energy music for the gym")

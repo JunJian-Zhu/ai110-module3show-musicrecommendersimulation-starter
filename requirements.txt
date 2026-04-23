@@ -2,5 +2,5 @@ pandas
 pytest
 streamlit
 tabulate
-anthropic
+google-genai
 python-dotenv

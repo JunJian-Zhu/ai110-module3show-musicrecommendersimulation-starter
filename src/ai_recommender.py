@@ -1,16 +1,16 @@
 """
 AI layer for VibeFinder (Project 4 extension).
 
+Uses Google Gemini (gemini-2.0-flash, free tier) instead of Anthropic Claude.
+Get a free API key at: https://aistudio.google.com/apikey
+
 Provides three capabilities on top of the existing rule-based recommender:
-  1. extract_preferences()   — Claude Haiku converts natural language into
-                               a structured preference dict (few-shot prompting)
-  2. generate_explanation()  — Claude Haiku writes a narrative explanation
+  1. extract_preferences()   — Gemini converts natural language into a
+                               structured preference dict (few-shot prompting)
+  2. generate_explanation()  — Gemini writes a narrative explanation
                                grounded in the actual song catalog (RAG)
   3. validate_input() /      — Input and output guardrails that run before
-     validate_preferences()    and after every Claude call
-
-Each Claude call is observable: callers receive a (result, error) tuple
-so failures can be logged, displayed, or fallen back from gracefully.
+     validate_preferences()    and after every Gemini call
 """
 
 import os
@@ -18,10 +18,11 @@ import json
 import re
 
 try:
-    import anthropic
-    _ANTHROPIC_AVAILABLE = True
+    from google import genai
+    from google.genai import types
+    _GENAI_AVAILABLE = True
 except ImportError:
-    _ANTHROPIC_AVAILABLE = False
+    _GENAI_AVAILABLE = False
 
 try:
     from dotenv import load_dotenv
@@ -32,7 +33,7 @@ except ImportError:
 
 # ── Model and valid-value sets ────────────────────────────────────────────────
 
-MODEL = "claude-haiku-4-5-20251001"
+MODEL = "gemini-2.0-flash"
 
 VALID_GENRES = {
     "pop", "lofi", "rock", "edm", "folk", "hip-hop", "classical",
@@ -110,7 +111,7 @@ Do not re-list the songs. End on an enthusiastic note.
 
 def validate_input(query: str) -> tuple:
     """
-    Check the user query before sending it to Claude.
+    Check the user query before sending it to Gemini.
     Returns (is_valid: bool, reason: str).
     """
     if not query or not query.strip():
@@ -133,10 +134,9 @@ def validate_input(query: str) -> tuple:
 
 def validate_preferences(prefs: dict) -> tuple:
     """
-    Validate that Claude's extracted preference dict matches the expected schema.
+    Validate that Gemini's extracted preference dict matches the expected schema.
     Returns (is_valid: bool, reason: str).
-    Mutates prefs in place: coerces genre/mood to lowercase and applies
-    graceful fallback for unknown genre/mood values.
+    Coerces genre/mood to lowercase and applies graceful fallback for unknowns.
     """
     required = ["genre", "mood", "energy", "likes_acoustic",
                 "target_valence", "target_danceability"]
@@ -154,12 +154,10 @@ def validate_preferences(prefs: dict) -> tuple:
     if not isinstance(prefs["likes_acoustic"], bool):
         return False, f"'likes_acoustic' must be true/false, got {prefs['likes_acoustic']!r}"
 
-    # Normalise string fields
     prefs["genre"] = str(prefs.get("genre", "any")).lower().strip()
     prefs["mood"] = str(prefs.get("mood", "any")).lower().strip()
     prefs["secondary_mood"] = str(prefs.get("secondary_mood", "")).lower().strip()
 
-    # Graceful fallback: unknown genre/mood → "any" (recommender ignores non-matches)
     if prefs["genre"] not in VALID_GENRES:
         prefs["genre"] = "any"
     if prefs["mood"] not in VALID_MOODS:
@@ -172,9 +170,8 @@ def validate_preferences(prefs: dict) -> tuple:
 
 def build_rag_context(songs: list) -> str:
     """
-    Convert the song catalog into a compact text block.
-    This is injected verbatim into Claude's explanation prompt so the model
-    can reference real song titles and attributes (retrieval-augmented generation).
+    Convert the song catalog into a compact text block injected into Gemini's
+    explanation prompt (retrieval-augmented generation).
     """
     lines = [f"Song catalog ({len(songs)} tracks):"]
     for s in songs:
@@ -187,56 +184,61 @@ def build_rag_context(songs: list) -> str:
     return "\n".join(lines)
 
 
-# ── Step 1: Preference extraction via Claude ──────────────────────────────────
+def _get_client():
+    """Create and return a Gemini client, or raise with a helpful message."""
+    if not _GENAI_AVAILABLE:
+        raise RuntimeError("google-genai not installed. Run: pip install google-genai")
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if not api_key:
+        raise RuntimeError(
+            "GEMINI_API_KEY is not set.\n"
+            "  Get a FREE key at: https://aistudio.google.com/apikey\n"
+            "  Then: export GEMINI_API_KEY='your-key-here'\n"
+            "  Or add it to your .env file."
+        )
+    return genai.Client(api_key=api_key)
+
+
+# ── Step 1: Preference extraction via Gemini ──────────────────────────────────
 
 def extract_preferences(query: str) -> tuple:
     """
-    Send the user query to Claude Haiku and extract structured music preferences.
+    Send the user query to Gemini and extract structured music preferences.
 
-    This is the few-shot structured prompting step (Specialization stretch).
-    The system prompt contains five labeled examples that teach Claude the exact
-    JSON schema before it sees the real query.
+    Uses few-shot structured prompting: the system prompt contains five labeled
+    examples that teach Gemini the exact JSON schema before it sees the real query.
 
     Returns (prefs_dict, error_string).
     On success: prefs_dict is a validated dict, error_string is "".
     On failure: prefs_dict is None, error_string explains why.
     """
-    if not _ANTHROPIC_AVAILABLE:
-        return None, "anthropic package not installed. Run: pip install anthropic"
-
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not api_key:
-        return None, (
-            "ANTHROPIC_API_KEY is not set.\n"
-            "  Fix: export ANTHROPIC_API_KEY='sk-ant-...'\n"
-            "  Or copy .env.example to .env and fill in your key."
-        )
+    try:
+        client = _get_client()
+    except RuntimeError as exc:
+        return None, str(exc)
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
+        response = client.models.generate_content(
             model=MODEL,
-            max_tokens=256,
-            system=_EXTRACTOR_SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": f'Request: "{query}"\nResponse:',
-            }],
+            contents=f'Request: "{query}"\nResponse:',
+            config=types.GenerateContentConfig(
+                system_instruction=_EXTRACTOR_SYSTEM,
+                max_output_tokens=256,
+                temperature=0.1,
+            ),
         )
-        raw = message.content[0].text.strip()
+        raw = response.text.strip()
 
-    except anthropic.AuthenticationError:
-        return None, (
-            "API key rejected (401 Unauthorized).\n"
-            "  Check that ANTHROPIC_API_KEY is correct.\n"
-            "  Get a valid key at: https://console.anthropic.com/"
-        )
-    except anthropic.APIConnectionError as exc:
-        return None, f"Could not reach Claude API: {exc}"
     except Exception as exc:
-        return None, f"Unexpected API error: {type(exc).__name__}: {exc}"
+        msg = str(exc)
+        if "API_KEY_INVALID" in msg or "invalid" in msg.lower():
+            return None, (
+                "Gemini API key is invalid.\n"
+                "  Get a free key at: https://aistudio.google.com/apikey"
+            )
+        return None, f"Gemini API error: {type(exc).__name__}: {msg}"
 
-    # Parse JSON — direct parse first, regex extraction as fallback
+    # Parse JSON — direct parse first, regex fallback second
     prefs = None
     try:
         prefs = json.loads(raw)
@@ -249,9 +251,8 @@ def extract_preferences(query: str) -> tuple:
                 pass
 
     if prefs is None:
-        return None, f"Could not parse JSON from Claude response: {raw!r}"
+        return None, f"Could not parse JSON from Gemini response: {raw!r}"
 
-    # Run output guardrail
     valid, error = validate_preferences(prefs)
     if not valid:
         return None, f"Output guardrail blocked: {error}"
@@ -259,20 +260,16 @@ def extract_preferences(query: str) -> tuple:
     return prefs, ""
 
 
-# ── Step 2: Narrative explanation via Claude (RAG) ────────────────────────────
+# ── Step 2: Narrative explanation via Gemini (RAG) ────────────────────────────
 
 def generate_explanation(query: str, recs: list, catalog_context: str) -> str:
     """
-    Use Claude Haiku to write a narrative explanation of why the recommended
-    songs match the user's request.
+    Use Gemini to write a narrative explanation of why the recommended songs
+    match the user's request. The full catalog is passed as RAG context.
 
-    The full song catalog is passed as RAG context so Claude can reference
-    real song attributes rather than hallucinating details.
-
-    Returns the explanation string, or a plain-text fallback on failure.
+    Returns the explanation string, or a fallback string on failure.
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if not _ANTHROPIC_AVAILABLE or not api_key:
+    if not _GENAI_AVAILABLE or not os.getenv("GEMINI_API_KEY", ""):
         titles = ", ".join(s["title"] for s, _, _ in recs[:3])
         return f"[AI explanation unavailable] Top picks: {titles}"
 
@@ -291,14 +288,17 @@ def generate_explanation(query: str, recs: list, catalog_context: str) -> str:
     )
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        message = client.messages.create(
+        client = _get_client()
+        response = client.models.generate_content(
             model=MODEL,
-            max_tokens=300,
-            system=_EXPLAINER_SYSTEM,
-            messages=[{"role": "user", "content": user_msg}],
+            contents=user_msg,
+            config=types.GenerateContentConfig(
+                system_instruction=_EXPLAINER_SYSTEM,
+                max_output_tokens=300,
+                temperature=0.7,
+            ),
         )
-        return message.content[0].text.strip()
+        return response.text.strip()
     except Exception:
         titles = ", ".join(s["title"] for s, _, _ in recs[:3])
         return f"[AI explanation unavailable] Top picks: {titles}"
